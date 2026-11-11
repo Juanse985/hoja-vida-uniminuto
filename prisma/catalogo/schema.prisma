@@ -1,0 +1,128 @@
+// Catálogo oficial — base de datos EXTRA, separada de las hojas de vida.
+// Se alimenta desde datos.gov.co y solo se consulta a través de /api/catalogo/v1.
+// No contiene datos personales: rector, teléfonos y correos nunca se descargan ($select).
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../../node_modules/.prisma/catalogo"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("CATALOGO_DATABASE_URL")
+}
+
+enum EstadoCarga {
+  ESCRITA    // descargada a bronce
+  AUDITADA   // pasó las reglas de calidad
+  PUBLICADA  // aplicada al catálogo (versión vigente)
+  RECHAZADA  // falló la auditoría; sigue publicada la anterior
+  SIN_CAMBIOS // rowsUpdatedAt o SHA-256 iguales a la última carga
+}
+
+enum SectorEducativo {
+  OFICIAL
+  NO_OFICIAL
+}
+
+/// Conjuntos de datos.gov.co que alimentan el catálogo (config/fuentes.json)
+model Fuente {
+  id         String  @id // colegios_men | snies_ies
+  datasetId  String  @map("dataset_id") // cfw5-qzt5 | n5yy-8nav
+  nombre     String
+  dominio    String  @default("www.datos.gov.co") // lista blanca
+  columnas   String[] // columnas pedidas en $select
+  activa     Boolean @default(true)
+  cargas     Carga[]
+
+  @@map("fuente")
+}
+
+/// Bitácora y linaje: una fila por intento de actualización
+model Carga {
+  id               Int         @id @default(autoincrement())
+  fuenteId         String      @map("fuente_id")
+  fuente           Fuente      @relation(fields: [fuenteId], references: [id])
+  versionFuente    DateTime?   @map("version_fuente") // rowsUpdatedAt de la API
+  sha256           String?
+  rutaBronce       String?     @map("ruta_bronce") // bronce/<fuente>/<fecha>/
+  filasLeidas      Int         @default(0) @map("filas_leidas")
+  filasValidas     Int         @default(0) @map("filas_validas")
+  nuevas           Int         @default(0)
+  cambiadas        Int         @default(0)
+  dadasDeBaja      Int         @default(0) @map("dadas_de_baja")
+  estado           EstadoCarga
+  errores          Json?
+  iniciadaEn       DateTime    @default(now()) @map("iniciada_en")
+  terminadaEn      DateTime?   @map("terminada_en")
+  colegios         Colegio[]
+  instituciones    InstitucionSuperior[]
+
+  @@index([fuenteId, estado, iniciadaEn])
+  @@map("carga")
+}
+
+/// Dimensión lentamente cambiante TIPO 2: una fila por versión de cada colegio.
+/// Índice único parcial (sql/indices.sql): un solo es_actual = true por codigo_dane.
+model Colegio {
+  id                  Int             @id @default(autoincrement()) // llave sustituta
+  codigoDane          String          @map("codigo_dane") // llave natural (12 dígitos)
+  nombre              String
+  nombreNormalizado   String          @map("nombre_normalizado") // mayúsculas, sin tildes ni signos
+  codDaneDepartamento String          @map("cod_dane_departamento")
+  departamento        String
+  codDaneMunicipio    String          @map("cod_dane_municipio")
+  municipio           String
+  sector              SectorEducativo
+  calendario          String?
+  caracter            String?
+  direccion           String?
+  anioReporte         Int             @map("anio_reporte") // a_o más reciente en la fuente
+  hashAtributos       String          @map("hash_atributos") // detecta cambios entre cargas
+  vigenteDesde        DateTime        @default(now()) @map("vigente_desde")
+  vigenteHasta        DateTime?       @map("vigente_hasta")
+  esActual            Boolean         @default(true) @map("es_actual")
+  cargaId             Int             @map("carga_id")
+  carga               Carga           @relation(fields: [cargaId], references: [id])
+
+  @@index([codigoDane, esActual])
+  @@index([nombreNormalizado])
+  @@index([codDaneMunicipio, esActual])
+  @@map("colegio")
+}
+
+/// Mismo patrón para instituciones de educación superior (SNIES).
+/// Columnas de la fuente por confirmar con /api/views/n5yy-8nav.json (spec 003).
+model InstitucionSuperior {
+  id                Int       @id @default(autoincrement())
+  codigoSnies       String    @map("codigo_snies")
+  nombre            String
+  nombreNormalizado String    @map("nombre_normalizado")
+  caracterAcademico String?   @map("caracter_academico")
+  sector            String?
+  departamento      String?
+  municipio         String?
+  estado            String?
+  hashAtributos     String    @map("hash_atributos")
+  vigenteDesde      DateTime  @default(now()) @map("vigente_desde")
+  vigenteHasta      DateTime? @map("vigente_hasta")
+  esActual          Boolean   @default(true) @map("es_actual")
+  cargaId           Int       @map("carga_id")
+  carga             Carga     @relation(fields: [cargaId], references: [id])
+
+  @@index([codigoSnies, esActual])
+  @@index([nombreNormalizado])
+  @@map("institucion_superior")
+}
+
+/// Aplicaciones autorizadas a consumir la API (cabecera X-Api-Key)
+model ClienteApi {
+  id         String    @id @default(uuid())
+  nombre     String    @unique // p. ej. "hoja-vida-uniminuto"
+  hashLlave  String    @map("hash_llave") // SHA-256 de la llave; la llave nunca se guarda
+  activo     Boolean   @default(true)
+  creadoEn   DateTime  @default(now()) @map("creado_en")
+  ultimoUso  DateTime? @map("ultimo_uso")
+
+  @@map("cliente_api")
+}
