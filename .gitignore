@@ -1,9 +1,0 @@
-node_modules/
-.next/
-.env
-.env.local
-.env.*.local
-coverage/
-playwright-report/
-test-results/
-.claude/settings.local.json
